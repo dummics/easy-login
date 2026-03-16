@@ -13,39 +13,46 @@ namespace Foxscore.EasyLogin
     [InitializeOnLoad]
     public static class Log
     {
+        private static readonly object Lock = new();
+        private static string _logFilePath;
+        private static bool _logFileInitialized;
+        private static bool _logFileWarningShown;
+
         static Log()
         {
-            InitializeLogFile();
-            ClearOldLogs();
+            TryInitializeLogFile();
         }
-        
-        private static readonly object Lock = new();
-        private static FileStream _fileStream;
 
-        private static void InitializeLogFile()
+        private static void TryInitializeLogFile()
         {
-            var logsDir = Path.Combine(Application.dataPath, "..", "Logs");
-            if (!Directory.Exists(logsDir))
-                Directory.CreateDirectory(logsDir);
-            var filePath = Path.Combine(logsDir, $"easy-login_{DateTime.Now:yyMMdd}.log");
-            _fileStream = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
-            _fileStream.Seek(0, SeekOrigin.End);
+            if (_logFileInitialized)
+                return;
 
-            AssemblyReloadEvents.beforeAssemblyReload += () =>
+            lock (Lock)
             {
-                lock (Lock)
+                if (_logFileInitialized)
+                    return;
+
+                try
                 {
-                    _fileStream.Dispose();
+                    var logsDir = Path.Combine(Application.dataPath, "..", "Logs");
+                    Directory.CreateDirectory(logsDir);
+                    _logFilePath = Path.Combine(logsDir, $"easy-login_{DateTime.Now:yyMMdd}.log");
+                    ClearOldLogs(logsDir);
+                    _logFileInitialized = true;
                 }
-            };
+                catch (Exception e)
+                {
+                    ReportFileLoggingFailure("Failed to initialize file logging. Unity console logging will continue.", e);
+                }
+            }
         }
 
-        private static void ClearOldLogs()
+        private static void ClearOldLogs(string logsDir)
         {
             const int maxLogFiles = 10;
             
-            var logsDir = new DirectoryInfo(Path.Combine(Application.dataPath, "..", "Logs"));
-            var files = logsDir
+            var files = new DirectoryInfo(logsDir)
                 .GetFiles("easy-login_*")
                 .OrderBy(f => f.LastWriteTime)
                 .ToList();
@@ -57,7 +64,7 @@ namespace Foxscore.EasyLogin
                 }
                 catch (Exception e)
                 {
-                    WriteToLogFile("ERR", $"Failed to delete log file `{files[0].Name}`", e);
+                    ReportFileLoggingFailure($"Failed to delete log file `{files[0].Name}`.", e);
                 }
                 finally
                 {
@@ -66,10 +73,28 @@ namespace Foxscore.EasyLogin
             }
         }
 
+        private static void ReportFileLoggingFailure(string message, Exception exception)
+        {
+            if (_logFileWarningShown)
+                return;
+
+            _logFileWarningShown = true;
+            UnityEngine.Debug.LogWarning(
+                UnityDebugPrefix +
+                message +
+                "\nEasy Login will continue running even if file logging is temporarily unavailable." +
+                (exception == null ? string.Empty : $"\n{exception.GetType().Name}: {exception.Message}")
+            );
+        }
+
         // * I don't know how exactly this regex works, but it does.
         private static readonly Regex RichTextRegex = new(@"<([^=>/]+)(?:=[^>]+)?>(.*?)</\1>", RegexOptions.Compiled | RegexOptions.Singleline);
         private static void WriteToLogFile(string type, string message, [CanBeNull] Exception exception = null)
         {
+            TryInitializeLogFile();
+            if (!_logFileInitialized || string.IsNullOrWhiteSpace(_logFilePath))
+                return;
+
             message = RichTextRegex.Replace(message, "$2");
             var str = $"[{DateTime.Now:yy-MM-dd} {DateTime.Now:HH:mm:ss}] [{type}] {message}";
             if (!str.EndsWith('\n'))
@@ -79,8 +104,21 @@ namespace Foxscore.EasyLogin
             var bytes = Encoding.UTF8.GetBytes(str);
             lock (Lock)
             {
-                _fileStream.Write(bytes, 0, bytes.Length);
-                _fileStream.Flush();
+                try
+                {
+                    using var fileStream = new FileStream(
+                        _logFilePath,
+                        FileMode.Append,
+                        FileAccess.Write,
+                        FileShare.ReadWrite | FileShare.Delete
+                    );
+                    fileStream.Write(bytes, 0, bytes.Length);
+                    fileStream.Flush();
+                }
+                catch (Exception e)
+                {
+                    ReportFileLoggingFailure("Failed to write to the Easy Login log file.", e);
+                }
             }
         }
         
