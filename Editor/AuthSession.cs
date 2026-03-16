@@ -17,6 +17,7 @@ namespace Foxscore.EasyLogin
             VerifyingCredentials,
             Enter2Auth,
             Verifying2Auth,
+            AwaitingLocationVerification,
         }
 
         private readonly SpinnerProvider _spinner = new();
@@ -29,6 +30,7 @@ namespace Foxscore.EasyLogin
         private static State _state = State.EnterCredentials;
         private TwoFactorType _2FaType = TwoFactorType.None;
         private string _authToken;
+        private string _locationVerificationMessage;
 
         private GUIStyle _titleStyle;
         private GUIStyle _labelStyle;
@@ -155,6 +157,40 @@ namespace Foxscore.EasyLogin
                     GUI.DrawTexture(spinnerRect, _spinner.Update());
                     break;
 
+                case State.AwaitingLocationVerification:
+                    GUILayout.Label("Verify Login", _titleStyle);
+                    EditorGUILayout.GetControlRect(false, 12);
+                    EditorGUILayout.HelpBox(
+                        string.IsNullOrWhiteSpace(_locationVerificationMessage)
+                            ? "VRChat requires you to verify this login externally before the sign-in can continue."
+                            : _locationVerificationMessage,
+                        MessageType.Warning
+                    );
+
+                    EditorGUILayout.GetControlRect(false, 12);
+                    buttonRect = EditorGUILayout.GetControlRect(true, 42);
+                    if (GUI.Button(buttonRect, "I've Verified, Retry Login", _nextStateButtonStyle))
+                    {
+                        _wereCredentialsOr2AuthInvalid = false;
+                        new Task(ValidateCredentials).Start();
+                        _state = State.VerifyingCredentials;
+                    }
+
+                    buttonRect = EditorGUILayout.GetControlRect(true, 21);
+                    if (GUI.Button(buttonRect, "Back"))
+                    {
+                        _state = State.EnterCredentials;
+                        GUI.FocusControl(null);
+                    }
+
+                    buttonRect = EditorGUILayout.GetControlRect(true, 21);
+                    if (GUI.Button(buttonRect, "Cancel"))
+                    {
+                        AccountWindowGUIHook.AuthSession = null;
+                        GUI.FocusControl(null);
+                    }
+                    break;
+
                 default:
                     throw new ArgumentOutOfRangeException();
             }
@@ -168,6 +204,7 @@ namespace Foxscore.EasyLogin
                 _password = "";
                 _2faCode = "";
                 _2FaType = TwoFactorType.None;
+                _locationVerificationMessage = null;
                 _state = State.EnterCredentials;
                 GUI.FocusControl(null);
             };
@@ -197,8 +234,19 @@ namespace Foxscore.EasyLogin
                         _authToken = cookie;
                         _2FaType = type;
                         _2faCode = "";
+                        _locationVerificationMessage = null;
                         _wereCredentialsOr2AuthInvalid = false;
                         _state = State.Enter2Auth;
+                    },
+                    // Location verification required
+                    message =>
+                    {
+                        _locationVerificationMessage = message;
+                        _2faCode = "";
+                        _authToken = null;
+                        _2FaType = TwoFactorType.None;
+                        _wereCredentialsOr2AuthInvalid = false;
+                        _state = State.AwaitingLocationVerification;
                     },
                     // Error
                     error =>

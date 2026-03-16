@@ -16,6 +16,8 @@ namespace Foxscore.EasyLogin
 
     public delegate void On2FaSuccess(string twoFactorAuth);
 
+    public delegate void OnLocationVerificationRequired(string message);
+
     public delegate void OnCookieVerificationSuccess();
 
     public delegate void OnFetchProfileSuccess(string id, string username, string displayName, string profilePictureUrl);
@@ -76,9 +78,86 @@ namespace Foxscore.EasyLogin
             return request;
         }
 
+        private static bool TryParseJsonBody(HTTPResponse response, out JObject jObject, out string error)
+        {
+            jObject = null;
+            error = null;
+
+            if (response == null || string.IsNullOrWhiteSpace(response.DataAsText))
+                return false;
+
+            try
+            {
+                jObject = JObject.Parse(response.DataAsText);
+                return true;
+            }
+            catch (Exception e)
+            {
+                error = e.Message;
+                return false;
+            }
+        }
+
+        private static string[] ExtractResponseStrings(JToken token)
+        {
+            if (token == null)
+                return Array.Empty<string>();
+
+            return token
+                .DescendantsAndSelf()
+                .OfType<JValue>()
+                .Where(v => v.Type == JTokenType.String)
+                .Select(v => v.Value<string>())
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Distinct()
+                .ToArray();
+        }
+
+        private static bool IsLocationVerificationMessage(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            var normalized = value.ToLowerInvariant();
+            return normalized.Contains("another place") ||
+                   normalized.Contains("new location") ||
+                   normalized.Contains("new place") ||
+                   normalized.Contains("verify login") ||
+                   normalized.Contains("verify this login") ||
+                   normalized.Contains("verify your login") ||
+                   normalized.Contains("verify location") ||
+                   normalized.Contains("verify this location") ||
+                   normalized.Contains("unrecognized location");
+        }
+
+        private static bool TryGetLocationVerificationMessage(HTTPResponse response, JObject jObject, out string message)
+        {
+            message = null;
+
+            var candidates = jObject != null
+                ? ExtractResponseStrings(jObject)
+                : Array.Empty<string>();
+
+            var matchedMessage = candidates.FirstOrDefault(IsLocationVerificationMessage);
+            if (matchedMessage == null && IsLocationVerificationMessage(response?.DataAsText))
+                matchedMessage = response.DataAsText;
+
+            if (matchedMessage == null)
+                return false;
+
+            message =
+                "VRChat requires you to verify this login from a new location.\n\n" +
+                "Check your email and complete the external login verification, then come back here and try again.";
+
+            if (!string.IsNullOrWhiteSpace(matchedMessage))
+                message += "\n\nVRChat response: " + matchedMessage;
+
+            return true;
+        }
+
         public static void Login(string username, string password,
             OnLoginSuccess onSuccess, OnInvalidCredentials onInvalidCredentials, On2FaRequired on2FaRequired,
-            OnError onError)
+            OnLocationVerificationRequired onLocationVerificationRequired, OnError onError)
         {
             try
             {
@@ -94,26 +173,21 @@ namespace Foxscore.EasyLogin
                 {
                     case 200:
                         var authCookie = (response.Cookies ?? new()).FirstOrDefault(c => c.Name == "auth");
-                        if (authCookie == null)
+                        if (!TryParseJsonBody(response, out var jObject, out var parseError))
                         {
-                            onError("Login response is missing auth header. Please report this to the developers of Easy Login.");
-                            return;
-                        }
-                        
-                        JObject jObject;
-                        try
-                        {
-                            jObject = JObject.Parse(response.DataAsText);
-                        }
-                        catch (Exception e)
-                        {
-                            onError("Failed to parse response body: " + e.Message);
+                            onError("Failed to parse response body: " + parseError);
                             return;
                         }
 
                         // Success
                         if (jObject.TryGetPropertyValue("id", out string idToken))
                         {
+                            if (authCookie == null)
+                            {
+                                onError("Login response is missing auth header. Please report this to the developers of Easy Login.");
+                                return;
+                            }
+
                             if (
                                 !jObject.TryGetPropertyValue("username", out string usernameToken) ||
                                 !jObject.TryGetPropertyValue("displayName", out string displayNameToken)
@@ -134,10 +208,20 @@ namespace Foxscore.EasyLogin
                         // 2FA
                         else if (jObject.TryGetPropertyValue("requiresTwoFactorAuth", out JArray validAuthsArrayToken))
                         {
+                            if (authCookie == null)
+                            {
+                                onError("Login response is missing auth header. Please report this to the developers of Easy Login.");
+                                return;
+                            }
+
                             on2FaRequired(authCookie.Value, validAuthsArrayToken.Values<string>().Contains("totp")
                                 ? TwoFactorType.TOTP
                                 : TwoFactorType.Email
                             );
+                        }
+                        else if (TryGetLocationVerificationMessage(response, jObject, out var locationVerificationMessage))
+                        {
+                            onLocationVerificationRequired(locationVerificationMessage);
                         }
                         // Invalid response
                         else
@@ -149,6 +233,13 @@ namespace Foxscore.EasyLogin
                         return;
 
                     case 401:
+                        TryParseJsonBody(response, out var unauthorizedBody, out _);
+                        if (TryGetLocationVerificationMessage(response, unauthorizedBody, out var locationVerificationMessage))
+                        {
+                            onLocationVerificationRequired(locationVerificationMessage);
+                            return;
+                        }
+
                         onInvalidCredentials();
                         return;
 
