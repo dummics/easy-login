@@ -17,7 +17,6 @@ namespace Foxscore.EasyLogin
             VerifyingCredentials,
             Enter2Auth,
             Verifying2Auth,
-            AwaitingLocationVerification,
         }
 
         private readonly SpinnerProvider _spinner = new();
@@ -78,6 +77,11 @@ namespace Foxscore.EasyLogin
                     EditorGUILayout.LabelField("Password", _labelStyle);
                     EditorGUILayout.GetControlRect(false, 1);
                     _password = EditorGUILayout.PasswordField(_password);
+                    if (!string.IsNullOrWhiteSpace(_locationVerificationMessage))
+                    {
+                        EditorGUILayout.GetControlRect(false, 8);
+                        EditorGUILayout.HelpBox(_locationVerificationMessage, MessageType.Warning);
+                    }
                     if (_wereCredentialsOr2AuthInvalid)
                         EditorGUILayout.LabelField("Incorrect username and/or password");
                     // Login Button
@@ -88,6 +92,7 @@ namespace Foxscore.EasyLogin
                         if (GUI.Button(buttonRect, "Login", _nextStateButtonStyle))
                         {
                             _wereCredentialsOr2AuthInvalid = false;
+                            _locationVerificationMessage = null;
                             new Task(ValidateCredentials).Start();
                             _state = State.VerifyingCredentials;
                         }
@@ -157,40 +162,6 @@ namespace Foxscore.EasyLogin
                     GUI.DrawTexture(spinnerRect, _spinner.Update());
                     break;
 
-                case State.AwaitingLocationVerification:
-                    GUILayout.Label("Verify Login", _titleStyle);
-                    EditorGUILayout.GetControlRect(false, 12);
-                    EditorGUILayout.HelpBox(
-                        string.IsNullOrWhiteSpace(_locationVerificationMessage)
-                            ? "VRChat requires you to verify this login externally before the sign-in can continue."
-                            : _locationVerificationMessage,
-                        MessageType.Warning
-                    );
-
-                    EditorGUILayout.GetControlRect(false, 12);
-                    buttonRect = EditorGUILayout.GetControlRect(true, 42);
-                    if (GUI.Button(buttonRect, "I've Verified, Retry Login", _nextStateButtonStyle))
-                    {
-                        _wereCredentialsOr2AuthInvalid = false;
-                        new Task(ValidateCredentials).Start();
-                        _state = State.VerifyingCredentials;
-                    }
-
-                    buttonRect = EditorGUILayout.GetControlRect(true, 21);
-                    if (GUI.Button(buttonRect, "Back"))
-                    {
-                        _state = State.EnterCredentials;
-                        GUI.FocusControl(null);
-                    }
-
-                    buttonRect = EditorGUILayout.GetControlRect(true, 21);
-                    if (GUI.Button(buttonRect, "Cancel"))
-                    {
-                        AccountWindowGUIHook.AuthSession = null;
-                        GUI.FocusControl(null);
-                    }
-                    break;
-
                 default:
                     throw new ArgumentOutOfRangeException();
             }
@@ -224,6 +195,7 @@ namespace Foxscore.EasyLogin
                     () =>
                     {
                         _wereCredentialsOr2AuthInvalid = true;
+                        _locationVerificationMessage = null;
                         _password = "";
                         EditorApplication.delayCall += () => GUI.FocusControl("");
                         _state = State.EnterCredentials;
@@ -241,12 +213,15 @@ namespace Foxscore.EasyLogin
                     // Location verification required
                     message =>
                     {
+                        Log.Warning<AuthSession>("Possible VRChat new-location verification challenge detected. Showing login guidance instead of generic invalid credentials.");
+                        Log.Warning<AuthSession>(message);
                         _locationVerificationMessage = message;
                         _2faCode = "";
                         _authToken = null;
                         _2FaType = TwoFactorType.None;
                         _wereCredentialsOr2AuthInvalid = false;
-                        _state = State.AwaitingLocationVerification;
+                        _state = State.EnterCredentials;
+                        EditorApplication.delayCall += () => GUI.FocusControl("");
                     },
                     // Error
                     error =>
