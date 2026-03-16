@@ -120,13 +120,16 @@ namespace Foxscore.EasyLogin
 
             var normalized = value.ToLowerInvariant();
             return normalized.Contains("another place") ||
+                   normalized.Contains("somewhere new") ||
                    normalized.Contains("new location") ||
                    normalized.Contains("new place") ||
+                   normalized.Contains("logging in from somewhere new") ||
                    normalized.Contains("verify login") ||
                    normalized.Contains("verify this login") ||
                    normalized.Contains("verify your login") ||
                    normalized.Contains("verify location") ||
                    normalized.Contains("verify this location") ||
+                   normalized.Contains("check your email for a message from vrchat") ||
                    normalized.Contains("unrecognized location");
         }
 
