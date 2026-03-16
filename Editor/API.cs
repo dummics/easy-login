@@ -113,12 +113,30 @@ namespace Foxscore.EasyLogin
                 .ToArray();
         }
 
-        private static bool IsLocationVerificationMessage(string value)
+        private static string NormalizeResponseMessage(string value)
         {
             if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            return value.Trim().Trim('"');
+        }
+
+        private static string TryGetErrorMessage(JObject jObject)
+        {
+            var errorMessage = NormalizeResponseMessage(jObject?["error"]?["message"]?.Value<string>());
+            if (!string.IsNullOrWhiteSpace(errorMessage))
+                return errorMessage;
+
+            return NormalizeResponseMessage(jObject?["message"]?.Value<string>());
+        }
+
+        private static bool IsLocationVerificationMessage(string value)
+        {
+            var normalizedMessage = NormalizeResponseMessage(value);
+            if (string.IsNullOrWhiteSpace(normalizedMessage))
                 return false;
 
-            var normalized = value.ToLowerInvariant();
+            var normalized = normalizedMessage.ToLowerInvariant();
             return normalized.Contains("another place") ||
                    normalized.Contains("somewhere new") ||
                    normalized.Contains("new location") ||
@@ -137,13 +155,26 @@ namespace Foxscore.EasyLogin
         {
             message = null;
 
-            var candidates = jObject != null
-                ? ExtractResponseStrings(jObject)
-                : Array.Empty<string>();
+            if (jObject?["requiresTwoFactorAuth"] != null)
+                return false;
 
-            var matchedMessage = candidates.FirstOrDefault(IsLocationVerificationMessage);
+            var authCookie = (response?.Cookies ?? new()).FirstOrDefault(c => c.Name == "auth");
+            var errorMessage = TryGetErrorMessage(jObject);
+            var matchedMessage = (response?.StatusCode == 401 || authCookie == null) &&
+                                 IsLocationVerificationMessage(errorMessage)
+                ? errorMessage
+                : null;
+
+            if (matchedMessage == null)
+            {
+                var candidates = jObject != null
+                    ? ExtractResponseStrings(jObject).Select(NormalizeResponseMessage).Where(v => !string.IsNullOrWhiteSpace(v)).ToArray()
+                    : Array.Empty<string>();
+
+                matchedMessage = candidates.FirstOrDefault(IsLocationVerificationMessage);
+            }
             if (matchedMessage == null && IsLocationVerificationMessage(response?.DataAsText))
-                matchedMessage = response.DataAsText;
+                matchedMessage = NormalizeResponseMessage(response.DataAsText);
 
             if (matchedMessage == null)
                 return false;
